@@ -85,13 +85,18 @@ char python_file[256]; // stores values as pyton variable
 bool init_tune = false; // Used to initialize stuff
 int num_lines = 0;
 
+// Draggable vars
+bool dragging = false;
+int drag_frames = 0;
+int drag_frames_threshold = 10;
+
 double angles[MAX_NUM_PARAMS][3]; // List of angle values from the file
 char property[50] = "CL_MAXD_A"; // What property to tune
 char properties[50][MAX_NUM_PARAMS]; // List of property names
 int current_property = -1; // Which property value to adjust when clicking the increase/decrease buttons
 ui_element *property_buttons[MAX_NUM_PARAMS]; // Store the buttons that can be selected
 double step = 0.000001; // Steps to adjust on each click
-float delta_step = 0.001; // Change step by this amount
+float delta_step = 0.000001; // Change step by this amount
 int step_toggle = 0; // Change to preset toggle step
 
 int param_index = 0; // Index to track which param label we're working with
@@ -369,7 +374,6 @@ void init_tuning(UIState *s) {
     .width = 120,
     .height = 120
   };
-
 }
 
 void draw_error( UIState *s) {
@@ -597,7 +601,7 @@ void screen_draw_tuning(UIState *s) {
 
     // tune button
     nvgBeginPath(s->vg);
-    nvgRoundedRect(s->vg, tune_button.pos_x, tune_button.pos_y, tune_button.width+35, tune_button.height+35, 100);
+    nvgRoundedRect(s->vg, tune_button.pos_x,tune_button.pos_y, tune_button.width+35, tune_button.height+35, 100);
     nvgStrokeColor(s->vg, nvgRGBA(255,255,255,80));
     nvgStrokeWidth(s->vg, 6);
     nvgStroke(s->vg);
@@ -711,6 +715,10 @@ void tuning( UIState *s, int touch_x, int touch_y, int key_up) {
 
   if (touch_x >= 0 && touch_y >= 0 && last_x == touch_x && last_y == touch_y && touch_frame >= touch_frame_delay) {
     hold = true;
+    if (ui_element_clicked(touch_x,touch_y,tune_button) && drag_frames>=drag_frames_threshold) {
+      dragging = true;
+    }
+    drag_frames++;
   }
 
   if (current_button != BTN_NONE && ((last_x != touch_x && last_y != touch_y) || (touch_x < 0 && touch_y < 0))) {
@@ -720,6 +728,15 @@ void tuning( UIState *s, int touch_x, int touch_y, int key_up) {
       current_button = BTN_NONE;
       frame_num = 0;
     }
+    dragging = false;
+    drag_frames = 0;
+  }
+
+  if (dragging) {
+    tune_button.pos_x = touch_x-(tune_button.width/2);
+    tune_button.pos_y = touch_y-(tune_button.height/2);
+
+    //printf("drag: %d, %d\n",touch_x,touch_y);
   }
 
   touch_frame++;
