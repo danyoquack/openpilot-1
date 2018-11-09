@@ -835,6 +835,18 @@ void tuning( UIState *s, int touch_x, int touch_y, int key_up) {
 
   bool hold = false; // Track whether we're pressing and holding
 
+  //debugger
+  if (touch_x > 0) {
+    nvgBeginPath(s->vg);
+    nvgRoundedRect(s->vg, touch_x, touch_y, 200, 200, 200);
+    nvgStrokeColor(s->vg, nvgRGBA(0,0,255,200));
+    nvgStrokeWidth(s->vg, 15);
+    nvgStroke(s->vg);
+    nvgFillColor(s->vg, nvgRGBA(255, 255, 255, 100));
+    nvgFill(s->vg);
+  }
+
+
   if (debug) { printf("tuning\n"); }
 
   if (status == ERROR_NO_FILE) {
