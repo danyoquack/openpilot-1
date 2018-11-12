@@ -225,7 +225,10 @@ typedef struct UIState {
   float light_sensor;
 } UIState;
 
+#include "dashcam.h"
 #include "tuning.h"
+#include "pid_display.h"
+struct cereal_Live100Data datad;
 
 static int last_brightness = -1;
 static void set_brightness(UIState *s, int brightness) {
@@ -892,6 +895,7 @@ static void ui_draw_vision_maxspeed(UIState *s) {
   }
 
   screen_draw_tuning(s);
+  draw_date_time(s);
 }
 
 static void ui_draw_vision_speed(UIState *s) {
@@ -1398,7 +1402,8 @@ static void ui_update(UIState *s) {
       cereal_read_Event(&eventd, eventp);
 
       if (eventd.which == cereal_Event_live100) {
-        struct cereal_Live100Data datad;
+        //debugger
+        //struct cereal_Live100Data datad;
         cereal_read_Live100Data(&datad, eventd.live100);
 
         if (datad.vCruise != s->scene.v_cruise) {
@@ -1467,6 +1472,9 @@ static void ui_update(UIState *s) {
           }
         }
 
+        // Display PID values
+        // debugger
+        //draw_pid_values(s,datad);
       } else if (eventd.which == cereal_Event_live20) {
         struct cereal_Live20Data datad;
         cereal_read_Live20Data(&datad, eventd.live20);
@@ -1780,17 +1788,22 @@ int main() {
     }
 
     // manage wakefulness
+    /* debugger
     if (s->awake_timeout > 0) {
       s->awake_timeout--;
     } else {
       set_awake(s, false);
     }
+    */
+    set_awake(s, true);
 
     if (s->awake) {
       ui_draw(s);
       glFinish();
       should_swap = true;
+      dashcam(s, touch_x, touch_y);
       tuning(s, touch_x, touch_y, key_up);
+      draw_pid_values(s,datad);
     }
 
     pthread_mutex_unlock(&s->lock);
