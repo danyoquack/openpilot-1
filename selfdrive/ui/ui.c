@@ -1760,7 +1760,13 @@ int main() {
 
   float smooth_brightness = BRIGHTNESS_B;
 
+  int framenum = 0;
+  float rolling_p[600];
+  float rolling_i[600];
+  float rolling_f[600];
+
   while (!do_exit) {
+    framenum++;
     bool should_swap = false;
     pthread_mutex_lock(&s->lock);
 
@@ -1803,7 +1809,7 @@ int main() {
       should_swap = true;
       dashcam(s, touch_x, touch_y);
       tuning(s, touch_x, touch_y, key_up);
-      draw_pid_values(s,datad);
+      draw_pid_values(s,datad,framenum,rolling_p,rolling_i,rolling_f);
     }
 
     pthread_mutex_unlock(&s->lock);
