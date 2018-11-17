@@ -32,7 +32,7 @@
 
 #include "custom_touch.h"
 
-#define VERSION "0.0.3"
+#define VERSION "0.0.4.1"
 
 #define ERROR_NO_FILE 1
 #define BTN_NONE 0
