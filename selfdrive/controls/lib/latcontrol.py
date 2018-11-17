@@ -124,7 +124,7 @@ class LatControl(object):
         steer_feedforward = self.angle_steers_des_mpc   # feedforward desired angle
       deadzone = 0.0
 
-      output_steer = self.pid.update(self.angle_steers_des_mpc, future_angle_steers, check_saturation=(v_ego > 10), override=steer_override,
+      output_steer = self.pid.update(int(self.angle_steers_des_mpc * 10.) / 10., future_angle_steers, check_saturation=(v_ego > 10), override=steer_override,
                                      feedforward=steer_feedforward, speed=v_ego, deadzone=deadzone)
     self.sat_flag = self.pid.saturated
     return output_steer, float(self.angle_steers_des_mpc)
