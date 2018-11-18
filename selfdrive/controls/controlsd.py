@@ -565,7 +565,7 @@ def controlsd_thread(gctx=None, rate=100, default_bias=0.):
         print "CP.steerActuatorDelay: %s" % CP.steerActuatorDelay
 
         VM.update_rt_params(CP)
-        LaC.update_rt_params(VM)
+        LaC.update_rt_params(CP)
     ########## END Tuning Mod #############
 
     # *** run loop at fixed rate ***
