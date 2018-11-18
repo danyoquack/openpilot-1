@@ -491,13 +491,13 @@ def controlsd_thread(gctx=None, rate=100, default_bias=0.):
 
   prof = Profiler(False)  # off by default
 
-  while True:
   ########## BEGIN Tuning Mod #############
   tune_file = "/sdcard/tuning/tune.txt"
   last_mod_time = 0
   mod_time = 0
   ########## END Tuning Mod #############
-
+  
+  while True:
     prof.checkpoint("Ratekeeper", ignore=True)
 
     # Sample data and compute car events
