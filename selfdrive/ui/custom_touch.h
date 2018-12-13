@@ -100,12 +100,7 @@ int custom_touch_poll(TouchState *s, int* out_x, int* out_y, int timeout, int* k
       } else if (event.code == ABS_MT_POSITION_Y) {
         s->last_y = event.value;
       }
-      break;
-    case EV_KEY:
-      if (event.code == BTN_TOOL_FINGER && event.value == 0) {
-        // finger up
-        up = true;
-      }
+      up = true;
       break;
     default:
       break;
