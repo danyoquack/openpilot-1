@@ -6,11 +6,10 @@ from common.params import Params
 from common.numpy_fast import interp
 
 import selfdrive.messaging as messaging
-from cereal import car
-from common.realtime import sec_since_boot
 from selfdrive.swaglog import cloudlog
 from selfdrive.config import Conversions as CV
 from selfdrive.services import service_list
+from selfdrive.controls.lib.drive_helpers import create_event, EventTypes as ET
 from selfdrive.controls.lib.speed_smoother import speed_smoother
 from selfdrive.controls.lib.longcontrol import LongCtrlState, MIN_CAN_SPEED
 from selfdrive.controls.lib.fcw import FCWChecker
@@ -114,9 +113,9 @@ class Planner(object):
 
     self.v_acc_future = min([self.mpc1.v_mpc_future, self.mpc2.v_mpc_future, v_cruise_setpoint])
 
-  def update(self, rcv_times, CS, CP, VM, PP, live20, live100, md, live_map_data):
+  def update(self, CS, CP, VM, PP, live20, live100, md, live_map_data):
     """Gets called when new live20 is available"""
-    cur_time = sec_since_boot()
+    cur_time = live20.logMonoTime / 1e9
     v_ego = CS.carState.vEgo
 
     long_control_state = live100.live100.longControlState
@@ -132,13 +131,11 @@ class Planner(object):
 
     v_speedlimit = NO_CURVATURE_SPEED
     v_curvature = NO_CURVATURE_SPEED
-
-    map_age = cur_time - rcv_times['liveMapData']
-    map_valid = live_map_data.liveMapData.mapValid and map_age < 10.0
+    map_valid = live_map_data.liveMapData.mapValid
 
     # Speed limit and curvature
     set_speed_limit_active = self.params.get("LimitSetSpeed") == "1" and self.params.get("SpeedLimitOffset") is not None
-    if set_speed_limit_active and map_valid:
+    if set_speed_limit_active:
       if live_map_data.liveMapData.speedLimitValid:
         speed_limit = live_map_data.liveMapData.speedLimit
         offset = float(self.params.get("SpeedLimitOffset"))
@@ -155,7 +152,7 @@ class Planner(object):
 
     # Calculate speed for normal cruise control
     if enabled:
-      accel_limits = [float(x) for x in calc_cruise_accel_limits(v_ego, following)]
+      accel_limits = map(float, calc_cruise_accel_limits(v_ego, following))
       jerk_limits = [min(-0.1, accel_limits[0]), max(0.1, accel_limits[1])]  # TODO: make a separate lookup for jerk tuning
       accel_limits = limit_accel_in_turns(v_ego, CS.carState.steeringAngle, accel_limits, self.CP)
 
@@ -209,16 +206,24 @@ class Planner(object):
     if fcw:
       cloudlog.info("FCW triggered %s", self.fcw_checker.counters)
 
-    radar_dead = cur_time - rcv_times['live20'] > 0.5
-
-    radar_errors = list(live20.live20.radarErrors)
-    radar_fault = car.RadarState.Error.fault in radar_errors
-    radar_comm_issue = car.RadarState.Error.commIssue in radar_errors
+    model_dead = cur_time - (md.logMonoTime / 1e9) > 0.5
 
     # **** send the plan ****
     plan_send = messaging.new_message()
     plan_send.init('plan')
 
+    # TODO: Move all these events to controlsd. This has nothing to do with planning
+    events = []
+    if model_dead:
+      events.append(create_event('modelCommIssue', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
+
+    radar_errors = list(live20.live20.radarErrors)
+    if 'commIssue' in radar_errors:
+      events.append(create_event('radarCommIssue', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
+    if 'fault' in radar_errors:
+      events.append(create_event('radarFault', [ET.NO_ENTRY, ET.SOFT_DISABLE]))
+
+    plan_send.plan.events = events
     plan_send.plan.mdMonoTime = md.logMonoTime
     plan_send.plan.l20MonoTime = live20.logMonoTime
 
@@ -236,12 +241,6 @@ class Planner(object):
     plan_send.plan.vCurvature = v_curvature
     plan_send.plan.decelForTurn = decel_for_turn
     plan_send.plan.mapValid = map_valid
-
-    radar_valid = not (radar_dead or radar_fault)
-    plan_send.plan.radarValid = bool(radar_valid)
-    plan_send.plan.radarCommIssue = bool(radar_comm_issue)
-
-    plan_send.plan.processingDelay = (plan_send.logMonoTime / 1e9) - rcv_times['live20']
 
     # Send out fcw
     fcw = fcw and (self.fcw_enabled or long_control_state != LongCtrlState.off)

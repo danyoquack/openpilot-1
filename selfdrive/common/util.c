@@ -26,7 +26,6 @@ void* read_file(const char* path, size_t* out_len) {
   fclose(f);
 
   if (num_read != 1) {
-    free(buf);
     return NULL;
   }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from cereal import car
+import numpy as np
 from common.realtime import sec_since_boot
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
@@ -26,6 +27,11 @@ class CarInterface(object):
     self.can_invalid_count = 0
     self.cruise_enabled_prev = False
     self.low_speed_alert = False
+    self.angle_offset_bias = 0.0
+    self.angles_error = np.zeros((500))
+    self.avg_error1 = 0.0
+    self.avg_error2 = 0.0
+    self.steer_error = 0.0
 
     # *** init the major players ***
     self.CS = CarState(CP)
@@ -68,13 +74,17 @@ class CarInterface(object):
     rotationalInertia_civic = 2500
     tireStiffnessFront_civic = 192150
     tireStiffnessRear_civic = 202500
+    ret.steerMPCReactTime = 0.0     # increase total MPC projected time by 25 ms
+    ret.steerMPCDampTime = 0.25       # dampen desired angle over 250ms (5 mpc cycles)
+    ret.rateFFGain = 0.4
     tire_stiffness_factor = 1.
+    ret.carCANRate = 100.0
 
     ret.steerActuatorDelay = 0.1  # Default delay
     ret.steerRateCost = 0.5
 
     if candidate == CAR.SANTA_FE:
-      ret.lateralTuning.pid.kf = 0.00005
+      ret.steerKf = 0.00005
       ret.mass = 3982 * CV.LB_TO_KG + std_cargo
       ret.wheelbase = 2.766
 
@@ -82,58 +92,56 @@ class CarInterface(object):
       ret.steerRatio = 16.55  # 13.8 is spec end-to-end
       tire_stiffness_factor = 0.82
 
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[9., 22.], [9., 22.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.2, 0.35], [0.05, 0.09]]
+      ret.steerKiBP, ret.steerKpBP = [[9., 22.], [9., 22.]]
+      ret.steerKpV, ret.steerKiV = [[0.2, 0.35], [0.05, 0.09]]
       ret.minSteerSpeed = 0.
     elif candidate == CAR.KIA_SORENTO:
-      ret.lateralTuning.pid.kf = 0.00005
+      ret.steerKf = 0.00005
       ret.mass = 1985 + std_cargo
       ret.wheelbase = 2.78
       ret.steerRatio = 14.4 * 1.1   # 10% higher at the center seems reasonable
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.25], [0.05]]
+      ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
+      ret.steerKpV, ret.steerKiV = [[0.25], [0.05]]
       ret.minSteerSpeed = 0.
     elif candidate == CAR.ELANTRA:
-      ret.lateralTuning.pid.kf = 0.00006
+      ret.steerKf = 0.00006
       ret.mass = 1275 + std_cargo
       ret.wheelbase = 2.7
       ret.steerRatio = 13.73   #Spec
       tire_stiffness_factor = 0.385
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.25], [0.05]]
+      ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
+      ret.steerKpV, ret.steerKiV = [[0.25], [0.05]]
       ret.minSteerSpeed = 32 * CV.MPH_TO_MS
     elif candidate == CAR.GENESIS:
-      ret.lateralTuning.pid.kf = 0.00005
+      ret.steerKf = 0.00005
       ret.mass = 2060 + std_cargo
       ret.wheelbase = 3.01
       ret.steerRatio = 16.5
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.16], [0.01]]
+      ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
+      ret.steerKpV, ret.steerKiV = [[0.16], [0.01]]
       ret.minSteerSpeed = 35 * CV.MPH_TO_MS
     elif candidate == CAR.KIA_OPTIMA:
-      ret.lateralTuning.pid.kf = 0.00005
+      ret.steerKf = 0.00005
       ret.mass = 3558 * CV.LB_TO_KG
       ret.wheelbase = 2.80
       ret.steerRatio = 13.75
       tire_stiffness_factor = 0.5
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.25], [0.05]]
+      ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
+      ret.steerKpV, ret.steerKiV = [[0.25], [0.05]]
     elif candidate == CAR.KIA_STINGER:
-      ret.lateralTuning.pid.kf = 0.00005
+      ret.steerKf = 0.00005
       ret.mass = 1825 + std_cargo
       ret.wheelbase = 2.78
       ret.steerRatio = 14.4 * 1.15   # 15% higher at the center seems reasonable
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.25], [0.05]]
+      ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
+      ret.steerKpV, ret.steerKiV = [[0.25], [0.05]]
       ret.minSteerSpeed = 0.
 
     ret.minEnableSpeed = -1.   # enable is done by stock ACC, so ignore this
-    ret.longitudinalTuning.kpBP = [0.]
-    ret.longitudinalTuning.kpV = [0.]
-    ret.longitudinalTuning.kiBP = [0.]
-    ret.longitudinalTuning.kiV = [0.]
-    ret.longitudinalTuning.deadzoneBP = [0.]
-    ret.longitudinalTuning.deadzoneV = [0.]
+    ret.longitudinalKpBP = [0.]
+    ret.longitudinalKpV = [0.]
+    ret.longitudinalKiBP = [0.]
+    ret.longitudinalKiV = [0.]
 
     ret.centerToFront = ret.wheelbase * 0.4
 
@@ -165,6 +173,8 @@ class CarInterface(object):
     ret.gasMaxV = [1.]
     ret.brakeMaxBP = [0.]
     ret.brakeMaxV = [1.]
+    ret.longPidDeadzoneBP = [0.]
+    ret.longPidDeadzoneV = [0.]
 
     ret.enableCamera = not any(x for x in CAMERA_MSGS if x in fingerprint)
     ret.openpilotLongitudinalControl = False
@@ -179,7 +189,7 @@ class CarInterface(object):
   def update(self, c):
     # ******************* do can recv *******************
     canMonoTimes = []
-    self.cp.update(int(sec_since_boot() * 1e9), False)
+    self.cp.update(int(sec_since_boot() * 1e9), True)
     self.cp_cam.update(int(sec_since_boot() * 1e9), False)
     self.CS.update(self.cp, self.cp_cam)
     # create message
@@ -194,6 +204,8 @@ class CarInterface(object):
     ret.wheelSpeeds.fr = self.CS.v_wheel_fr
     ret.wheelSpeeds.rl = self.CS.v_wheel_rl
     ret.wheelSpeeds.rr = self.CS.v_wheel_rr
+    ret.steeringTorqueClipped = self.CS.torque_clipped
+    ret.steeringRequested = self.CS.apply_steer
 
     # gear shifter
     if self.CP.carFingerprint in FEATURES["use_cluster_gears"]:

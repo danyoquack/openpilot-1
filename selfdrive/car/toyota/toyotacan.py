@@ -78,18 +78,6 @@ def create_accel_command(packer, accel, pcm_cancel, standstill_req, lead):
   }
   return packer.make_can_msg("ACC_CONTROL", 0, values)
 
-def create_gas_command(packer, gas_amount):
-  """Creates a CAN message for the Pedal DBC GAS_COMMAND."""
-  enable = gas_amount > 0.001
-
-  values = {"ENABLE": enable}
-
-  if enable:
-    values["GAS_COMMAND"] = gas_amount * 255.
-    values["GAS_COMMAND2"] = gas_amount * 255.
-
-  return packer.make_can_msg("GAS_COMMAND", 0, values)
-
 
 def create_fcw_command(packer, fcw):
   values = {
@@ -101,11 +89,10 @@ def create_fcw_command(packer, fcw):
   return packer.make_can_msg("ACC_HUD", 0, values)
 
 
-def create_ui_command(packer, steer, sound1, sound2, left_line, right_line, left_lane_depart, right_lane_depart):
+def create_ui_command(packer, steer, sound1, sound2, left_line, right_line):
   values = {
-    "RIGHT_LINE": 3 if right_lane_depart else 1 if right_line else 2,
-    "LEFT_LINE": 3 if left_lane_depart else 1 if left_line else 2,
-    "BARRIERS" : 3 if left_lane_depart or right_lane_depart else 0,
+    "RIGHT_LINE": 1 if right_line else 2,
+    "LEFT_LINE": 1 if left_line else 2,
     "SET_ME_X0C": 0x0c,
     "SET_ME_X2C": 0x2c,
     "SET_ME_X38": 0x38,

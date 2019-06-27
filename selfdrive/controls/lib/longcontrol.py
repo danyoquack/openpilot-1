@@ -17,8 +17,6 @@ BRAKE_STOPPING_TARGET = 0.5  # apply at least this amount of brake to maintain t
 _MAX_SPEED_ERROR_BP = [0., 30.]  # speed breakpoints
 _MAX_SPEED_ERROR_V = [1.5, .8]  # max positive v_pid error VS actual speed; this avoids controls windup due to slow pedal resp
 
-RATE = 100.0
-
 
 def long_control_state_trans(active, long_control_state, v_ego, v_target, v_pid,
                              output_gb, brake_pressed, cruise_standstill):
@@ -58,9 +56,9 @@ def long_control_state_trans(active, long_control_state, v_ego, v_target, v_pid,
 class LongControl(object):
   def __init__(self, CP, compute_gb):
     self.long_control_state = LongCtrlState.off  # initialized to off
-    self.pid = PIController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV),
-                            (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
-                            rate=RATE,
+    self.pid = PIController((CP.longitudinalKpBP, CP.longitudinalKpV),
+                            (CP.longitudinalKiBP, CP.longitudinalKiV),
+                            rate=int(CP.carCANRate),
                             sat_limit=0.8,
                             convert=compute_gb)
     self.v_pid = 0.0
@@ -99,7 +97,7 @@ class LongControl(object):
       # Toyota starts braking more when it thinks you want to stop
       # Freeze the integrator so we don't accelerate to compensate, and don't allow positive acceleration
       prevent_overshoot = not CP.stoppingControl and v_ego < 1.5 and v_target_future < 0.7
-      deadzone = interp(v_ego_pid, CP.longitudinalTuning.deadzoneBP, CP.longitudinalTuning.deadzoneV)
+      deadzone = interp(v_ego_pid, CP.longPidDeadzoneBP, CP.longPidDeadzoneV)
 
       output_gb = self.pid.update(self.v_pid, v_ego_pid, speed=v_ego_pid, deadzone=deadzone, feedforward=a_target, freeze_integrator=prevent_overshoot)
 
@@ -110,7 +108,7 @@ class LongControl(object):
     elif self.long_control_state == LongCtrlState.stopping:
       # Keep applying brakes until the car is stopped
       if not standstill or output_gb > -BRAKE_STOPPING_TARGET:
-        output_gb -= STOPPING_BRAKE_RATE / RATE
+        output_gb -= STOPPING_BRAKE_RATE / CP.carCANRate
       output_gb = clip(output_gb, -brake_max, gas_max)
 
       self.v_pid = v_ego
@@ -119,7 +117,7 @@ class LongControl(object):
     # Intention is to move again, release brake fast before handing control to PID
     elif self.long_control_state == LongCtrlState.starting:
       if output_gb < -0.2:
-        output_gb += STARTING_BRAKE_RATE / RATE
+        output_gb += STARTING_BRAKE_RATE / CP.carCANRate
       self.v_pid = v_ego
       self.pid.reset()
 

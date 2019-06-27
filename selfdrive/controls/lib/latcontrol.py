@@ -1,127 +1,236 @@
-import math
 import numpy as np
-from selfdrive.controls.lib.pid import PIController
-from selfdrive.controls.lib.drive_helpers import MPC_COST_LAT
-from selfdrive.controls.lib.lateral_mpc import libmpc_py
-from common.numpy_fast import interp
 from common.realtime import sec_since_boot
-from selfdrive.swaglog import cloudlog
+from selfdrive.controls.lib.pid import PIController
+from common.numpy_fast import interp
+from selfdrive.kegman_conf import kegman_conf
 from cereal import car
-
-_DT = 0.01    # 100Hz
-_DT_MPC = 0.05  # 20Hz
-
-
-def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay):
-  states[0].x = v_ego * delay
-  states[0].psi = v_ego * curvature_factor * math.radians(steer_angle) / steer_ratio * delay
-  return states
-
 
 def get_steer_max(CP, v_ego):
   return interp(v_ego, CP.steerMaxBP, CP.steerMaxV)
 
-
 class LatControl(object):
   def __init__(self, CP):
-    self.pid = PIController((CP.steerKpBP, CP.steerKpV),
-                            (CP.steerKiBP, CP.steerKiV),
-                            k_f=CP.steerKf, pos_limit=1.0)
+
+    kegman = kegman_conf(CP)
+    self.gernbySteer = True
+    self.frame = 0
+    self.total_rate_projection = max(0.0, CP.rateReactTime + CP.rateDampTime)
+    self.actual_rate_smoothing = max(1.0, CP.rateDampTime * CP.carCANRate)
+    self.total_poly_projection = max(0.0, CP.polyReactTime + CP.polyDampTime)
+    self.poly_smoothing = max(1.0, CP.polyDampTime * CP.carCANRate)
+    self.poly_scale = CP.polyScale
+    self.cur_poly_scale = 0.0
+    self.total_angle_projection = max(0.0, CP.steerReactTime + CP.steerDampTime)
+    self.actual_angle_smoothing = max(1.0, CP.steerDampTime * CP.carCANRate)
+    self.total_desired_projection = max(0.0, CP.steerMPCReactTime + CP.steerMPCDampTime)
+    self.desired_smoothing = max(1.0, CP.steerMPCDampTime * CP.carCANRate)
+    self.delaySteer = CP.steerActuatorDelay
+    self.center_factor = CP.centerFactor
+    self.dampened_angle_steers = 0.0
+    self.dampened_actual_angle = 0.0
+    self.dampened_angle_rate = 0.0
+    self.dampened_desired_angle = 0.0
+    self.dampened_desired_rate = 0.0
+    self.previous_integral = 0.0
     self.last_cloudlog_t = 0.0
-    self.setup_mpc(CP.steerRateCost)
+    self.angle_steers_des = 0.
+    self.angle_ff_ratio = 0.0
+    self.standard_ff_ratio = 0.0
+    self.angle_ff_gain = 1.0
+    self.rate_ff_gain = CP.rateFFGain
+    self.average_angle_steers = 0.
+    self.angle_ff_bp = [[0.5, 5.0],[0.0, 1.0]]
+    self.oscillation_factor = CP.oscillationFactor
+    self.deadzone = CP.steerBacklash
+    self.doScale = True if len(CP.steerPscale) > 0 else False
+    self.prev_angle_rate= 0.0
+    self.longOffset = 0.0
+    self.steer_counter = 1
+    self.steer_counter_prev = 0
+    self.angle_accel = 0.0
+    self.recorded_error = np.zeros((100))
+    self.avg_error = 0.0
+    self.error_feedback = 0.0
+    self.centering_error = 0.0
+    self.path_error = 0.0
+    self.center_rate_adjust = 0.0
+    self.d_poly = [0., 0., 0., 0.]
+    self.c_poly = [0., 0., 0., 0.]
+    self.c_prob = 0.0
+    self.high_feedforward = 0.25 / CP.steerKf
 
-  def update_rt_params(self, VM):
-    # TODO:  Is this really necessary, or is the original reference preserved through the cap n' proto setup?
-    # Real-time tuning:  Update these values from the CP if called from real-time tuning logic in controlsd
-    self.pid._k_p = (VM.CP.steerKpBP, VM.CP.steerKpV)    # proportional gain
-    self.pid._k_i = (VM.CP.steerKiBP, VM.CP.steerKiV)    # integral gain
-    self.pid.k_f = VM.CP.steerKf                         # feedforward gain
+    KpV = [interp(25.0, CP.steerKpBP, CP.steerKpV)]
+    KiV = [interp(25.0, CP.steerKiBP, CP.steerKiV)]
+    self.pid = PIController(([0.], KpV),
+                            ([0.], KiV),
+                            k_f=CP.steerKf, pos_limit=1.0, rate=int(CP.carCANRate))
 
-  def setup_mpc(self, steer_rate_cost):
-    self.libmpc = libmpc_py.libmpc
-    self.libmpc.init(MPC_COST_LAT.PATH, MPC_COST_LAT.LANE, MPC_COST_LAT.HEADING, steer_rate_cost)
-
-    self.mpc_solution = libmpc_py.ffi.new("log_t *")
-    self.cur_state = libmpc_py.ffi.new("state_t *")
-    self.mpc_updated = False
-    self.mpc_nans = False
-    self.cur_state[0].x = 0.0
-    self.cur_state[0].y = 0.0
-    self.cur_state[0].psi = 0.0
-    self.cur_state[0].delta = 0.0
-
-    self.last_mpc_ts = 0.0
-    self.angle_steers_des = 0.0
-    self.angle_steers_des_mpc = 0.0
-    self.angle_steers_des_prev = 0.0
-    self.angle_steers_des_time = 0.0
+  def live_tune(self, CP):
+    if self.frame % 300 == 0:
+      # live tuning through /data/openpilot/tune.py overrides interface.py settings
+      kegman = kegman_conf()
+      if kegman.conf['tuneGernby'] == "1":
+        self.steerKpV = np.array([float(kegman.conf['Kp'])])
+        self.steerKiV = np.array([float(kegman.conf['Ki'])])
+        self.total_angle_projection = max(0.0, float(kegman.conf['dampSteer']) + float(kegman.conf['reactSteer']))
+        self.total_rate_projection = max(0.0, float(kegman.conf['dampRate']) + float(kegman.conf['reactRate']))
+        self.total_desired_projection = max(0.0, float(kegman.conf['dampMPC']) + float(kegman.conf['reactMPC']))
+        self.actual_rate_smoothing = max(1.0, float(kegman.conf['dampRate']) * CP.carCANRate)
+        self.actual_angle_smoothing = max(1.0, float(kegman.conf['dampSteer']) * CP.carCANRate)
+        self.desired_smoothing = max(1.0, float(kegman.conf['dampMPC']) * CP.carCANRate)
+        self.total_poly_projection = max(0.0, float(kegman.conf['reactPoly']) + float(kegman.conf['dampPoly']))
+        self.poly_smoothing = max(1.0, float(kegman.conf['dampPoly']) * CP.carCANRate)
+        self.rate_ff_gain = float(kegman.conf['rateFF'])
+        self.gernbySteer = (self.total_desired_projection > 0 or self.desired_smoothing > 1 or abs(float(kegman.conf['dampMPC'])) > 0)
+        self.delaySteer = float(kegman.conf['delaySteer'])
+        self.oscillation_factor = float(kegman.conf['oscFactor'])
+        self.deadzone = -float(kegman.conf['backlash'])
+        self.longOffset = float(kegman.conf['longOffset'])
+        self.center_factor = float(kegman.conf['centerFactor'])
+        #self.poly_scale = float(kegman.conf['scalePoly'])
+        print(self.deadzone, kegman.conf['backlash'])
+        # Eliminate break-points, since they aren't needed (and would cause problems for resonance)
+        KpV = [interp(25.0, CP.steerKpBP, self.steerKpV)]
+        KiV = [interp(25.0, CP.steerKiBP, self.steerKiV)]
+        self.pid._k_i = ([0.], KiV)
+        self.pid._k_p = ([0.], KpV)
+        self.standard_ff_ratio = 0.0
+        print(self.rate_ff_gain, self.angle_ff_gain)
+      else:
+        self.gernbySteer = False
+        self.standard_ff_ratio = 1.0
+        self.angle_ff_ratio = 0.0
 
   def reset(self):
+    self.frame = 0
     self.pid.reset()
 
-  def update(self, active, v_ego, angle_steers, steer_override, d_poly, angle_offset, CP, VM, PL):
-    cur_time = sec_since_boot()
-    self.mpc_updated = False
-    # TODO: this creates issues in replay when rewinding time: mpc won't run
-    if self.last_mpc_ts < PL.last_md_ts:
-      self.last_mpc_ts = PL.last_md_ts
-      self.angle_steers_des_prev = self.angle_steers_des_mpc
+  def adjust_angle_gain(self, torque_clipped):
+    if (self.pid.f > 0) == (self.pid.i > 0) and abs(self.pid.i) >= abs(self.previous_integral) and abs(self.pid.i) > 0:
+      if not torque_clipped: self.angle_ff_gain *= 1.0001
+    elif self.angle_ff_gain > 1.0:
+      self.angle_ff_gain *= 0.9999
+    self.previous_integral = self.pid.i
 
-      curvature_factor = VM.curvature_factor(v_ego)
+  def calc_angle_accel(self, CP, angle_rate):
+    if angle_rate != self.prev_angle_rate:
+      self.steer_counter_prev = self.steer_counter
+      self.angle_accel = (self.prev_angle_rate - angle_rate) / self.steer_counter_prev
+      self.prev_angle_rate = angle_rate
+      self.steer_counter = 0.0
+    elif self.steer_counter >= self.steer_counter_prev:
+      self.angle_accel = (self.steer_counter * self.angle_accel) / (self.steer_counter + 1.0)
+    self.steer_counter += 1.0
+    return self.angle_accel
 
-      l_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.l_poly))
-      r_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.r_poly))
-      p_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.p_poly))
+  def get_error_feedback(self, angle_offset):
+    oldest_error = self.recorded_error[self.frame % 100]
+    prev_error = self.recorded_error[(self.frame - 1) % 100]
+    new_error = self.dampened_desired_angle - self.dampened_actual_angle
+    self.avg_error += 0.01 * (new_error - self.avg_error)
+    self.recorded_error[self.frame % 100] = prev_error + 0.04 * (new_error - prev_error)
+    error_factor = np.interp(max(abs(self.dampened_desired_angle - angle_offset), abs(self.avg_error)), [1.0, 2.0], [self.oscillation_factor, 0.0])
+    self.error_feedback = float((oldest_error - self.avg_error) * error_factor)
+    return self.error_feedback
 
-      # account for actuation delay
-      self.cur_state = calc_states_after_delay(self.cur_state, v_ego, angle_steers, curvature_factor, CP.steerRatio, CP.steerActuatorDelay)
+  def get_projected_path_error(self, v_ego, path_plan):
+    self.d_poly[3] += path_plan.cProb * ((path_plan.dPoly[3] - self.d_poly[3])) / self.poly_smoothing
+    self.d_poly[2] += path_plan.cProb * ((path_plan.dPoly[2] - self.d_poly[2])) / (self.poly_smoothing * 2)
+    self.d_poly[1] += path_plan.cProb * ((path_plan.dPoly[1] - self.d_poly[1])) / (self.poly_smoothing * 4)
+    self.d_poly[0] += path_plan.cProb * ((path_plan.dPoly[0] - self.d_poly[0])) / (self.poly_smoothing * 6)
+    self.c_poly[3] += path_plan.cProb * ((path_plan.cPoly[3] - self.c_poly[3])) / self.poly_smoothing
+    self.c_poly[2] += path_plan.cProb * ((path_plan.cPoly[2] - self.c_poly[2])) / (self.poly_smoothing * 2)
+    self.c_poly[1] += path_plan.cProb * ((path_plan.cPoly[1] - self.c_poly[1])) / (self.poly_smoothing * 4)
+    self.c_poly[0] += path_plan.cProb * ((path_plan.cPoly[0] - self.c_poly[0])) / (self.poly_smoothing * 6)
+    x = v_ego * self.total_poly_projection
+    self.d_pts = np.polyval(self.d_poly, np.arange(0, x))
+    self.c_pts = np.polyval(self.c_poly, np.arange(0, x))
+    return np.sum(self.c_pts) - np.sum(self.d_pts)
 
-      v_ego_mpc = max(v_ego, 5.0)  # avoid mpc roughness due to low speed
-      self.libmpc.run_mpc(self.cur_state, self.mpc_solution,
-                          l_poly, r_poly, p_poly,
-                          PL.PP.l_prob, PL.PP.r_prob, PL.PP.p_prob, curvature_factor, v_ego_mpc, PL.PP.lane_width)
+  def update(self, active, v_ego, angle_steers, angle_rate, torque_clipped, steer_override, CP, VM, path_plan):
 
-      # reset to current steer angle if not active or overriding
-      if active:
-        delta_desired = self.mpc_solution[0].delta[1]
-      else:
-        delta_desired = math.radians(angle_steers - angle_offset) / CP.steerRatio
+    self.frame += 1
+    self.live_tune(CP)
 
-      self.cur_state[0].delta = delta_desired
-
-      self.angle_steers_des_mpc = float(math.degrees(delta_desired * CP.steerRatio) + angle_offset)
-      self.angle_steers_des_time = cur_time
-      self.mpc_updated = True
-
-      #  Check for infeasable MPC solution
-      self.mpc_nans = np.any(np.isnan(list(self.mpc_solution[0].delta)))
-      t = sec_since_boot()
-      if self.mpc_nans:
-        self.libmpc.init(MPC_COST_LAT.PATH, MPC_COST_LAT.LANE, MPC_COST_LAT.HEADING, CP.steerRateCost)
-        self.cur_state[0].delta = math.radians(angle_steers) / CP.steerRatio
-
-        if t > self.last_cloudlog_t + 5.0:
-          self.last_cloudlog_t = t
-          cloudlog.warning("Lateral mpc - nan: True")
-
+    angle_steers += self.get_error_feedback(path_plan.angleOffset)
     if v_ego < 0.3 or not active:
       output_steer = 0.0
       self.pid.reset()
+      self.previous_integral = 0.0
+      self.dampened_angle_steers = float(angle_steers)
+      self.dampened_desired_angle = float(angle_steers)
+      self.dampened_angle_rate = float(angle_rate)
+      self.dampened_desired_rate = 0.0
+      self.dampened_center_offset = 0.0
     else:
-      # TODO: ideally we should interp, but for tuning reasons we keep the mpc solution
-      # constant for 0.05s.
-      #dt = min(cur_time - self.angle_steers_des_time, _DT_MPC + _DT) + _DT  # no greater than dt mpc + dt, to prevent too high extraps
-      #self.angle_steers_des = self.angle_steers_des_prev + (dt / _DT_MPC) * (self.angle_steers_des_mpc - self.angle_steers_des_prev)
-      self.angle_steers_des = self.angle_steers_des_mpc
-      steers_max = get_steer_max(CP, v_ego)
-      self.pid.pos_limit = steers_max
-      self.pid.neg_limit = -steers_max
-      steer_feedforward = self.angle_steers_des   # feedforward desired angle
+      if self.gernbySteer == False:
+        self.dampened_angle_steers = float(angle_steers)
+        self.dampened_desired_angle = float(path_plan.angleSteers)
+        self.dampened_desired_rate = float(path_plan.rateSteers)
+
+      else:
+        cur_time = sec_since_boot()
+        projected_desired_angle = interp(cur_time + self.total_desired_projection, path_plan.mpcTimes, path_plan.mpcAngles)
+        self.dampened_desired_angle += ((projected_desired_angle - self.dampened_desired_angle) / self.desired_smoothing)
+        projected_desired_rate = interp(cur_time + self.total_desired_projection, path_plan.mpcTimes, path_plan.mpcRates)
+        self.dampened_desired_rate += ((projected_desired_rate - self.dampened_desired_rate) / self.desired_smoothing)
+
+        if not steer_override:
+          self.angle_accel = self.calc_angle_accel(CP, angle_rate)
+          projected_angle_rate = angle_rate + self.total_rate_projection * self.angle_accel
+          self.dampened_angle_rate += ((projected_angle_rate - self.dampened_angle_rate) / self.actual_rate_smoothing)
+          projected_angle_steers = float(angle_steers) + self.total_angle_projection * self.dampened_angle_rate
+          self.dampened_angle_steers += ((projected_angle_steers - self.dampened_angle_steers) / self.actual_angle_smoothing)
+
       if CP.steerControlType == car.CarParams.SteerControlType.torque:
-        steer_feedforward *= v_ego**2  # proportional to realigning tire momentum (~ lateral accel)
-      deadzone = 0.0
-      output_steer = self.pid.update(self.angle_steers_des, angle_steers, check_saturation=(v_ego > 10), override=steer_override,
-                                     feedforward=steer_feedforward, speed=v_ego, deadzone=deadzone)
+        steers_max = get_steer_max(CP, v_ego)
+        self.pid.pos_limit = steers_max
+        self.pid.neg_limit = -steers_max
+
+        angle_feedforward = self.dampened_desired_angle - path_plan.angleOffset
+        if self.gernbySteer:
+          if self.doScale:
+            if abs(self.dampened_desired_angle) > abs(self.dampened_angle_steers):
+              p_scale = interp(abs(angle_feedforward), CP.steerPscale[0], CP.steerPscale[1])
+            else:
+              p_scale = interp(abs(angle_feedforward), CP.steerPscale[0], CP.steerPscale[2])
+          else:
+            p_scale = 1.0
+          self.angle_ff_ratio = interp(abs(angle_feedforward), self.angle_ff_bp[0], self.angle_ff_bp[1])
+          angle_feedforward *= self.angle_ff_ratio * self.angle_ff_gain
+          rate_feedforward = (1.0 - self.angle_ff_ratio) * self.rate_ff_gain * self.dampened_desired_rate
+          steer_feedforward = v_ego**2 * (rate_feedforward + angle_feedforward)
+        else:
+          p_scale = 1.0
+          self.angle_ff_ratio = 1.0
+          steer_feedforward = v_ego**2 * angle_feedforward
+        #print(steer_feedforward)
+        #self.dampened_center_offset += path_plan.cProb * (self.get_projected_path_error(v_ego, path_plan) - self.dampened_center_offset) / self.poly_smoothing
+        if len(CP.polyScale) > 0:
+          if abs(self.dampened_desired_angle) > abs(self.dampened_angle_steers):
+            self.cur_poly_scale += 0.05 * (interp(abs(self.dampened_desired_rate), CP.polyScale[0], CP.polyScale[1]) - self.cur_poly_scale)
+          else:
+            self.cur_poly_scale += 0.05 * (interp(abs(self.dampened_desired_rate), CP.polyScale[0], CP.polyScale[2]) - self.cur_poly_scale)
+        else:
+          self.cur_poly_scale = 1.0
+
+        self.path_error = v_ego * self.get_projected_path_error(v_ego, path_plan) * self.center_factor * self.cur_poly_scale  # interp(abs(steer_feedforward), [0.0, self.high_feedforward], [1.0 , self.poly_scale])
+        #if self.frame % 100 == 0:
+        #  print('%0.2f   %0.4f   %0.6f   %0.8f \n' % tuple(self.d_poly) + '%0.2f   %0.4f   %0.6f   %0.8f \n' % tuple(self.c_poly))
+        output_steer = self.pid.update(self.dampened_desired_angle, self.dampened_angle_steers,
+                        add_error=self.path_error, check_saturation=(v_ego > 10), override=steer_override,
+                                feedforward=steer_feedforward, speed=v_ego, deadzone=0.0, p_scale=p_scale)
+
+        if self.gernbySteer and not steer_override and v_ego > 10.0:
+          if abs(angle_steers) > (self.angle_ff_bp[0][1] / 2.0):
+            self.adjust_angle_gain(torque_clipped)
+          else:
+            self.previous_integral = self.pid.i
 
     self.sat_flag = self.pid.saturated
-    return output_steer, float(self.angle_steers_des)
+    self.average_angle_steers += 0.1 * (angle_steers - self.average_angle_steers)
+
+    if CP.steerControlType == car.CarParams.SteerControlType.torque:
+      return float(output_steer), float(path_plan.angleSteers), float(self.dampened_desired_rate)
+    else:
+      return float(self.dampened_desired_angle), float(path_plan.angleSteers), float(self.dampened_desired_rate)

@@ -90,7 +90,6 @@ ModelData model_eval_frame(ModelState* s, cl_command_queue q,
 }
 
 void model_free(ModelState* s) {
-  free(s->output);
   model_input_free(&s->in);
   delete s->m;
 }

@@ -25,10 +25,10 @@ MAX_ANGLE_OFFSET = math.radians(10.)
 MAX_ANGLE_OFFSET_TH = math.radians(9.)
 MIN_STIFFNESS = 0.5
 MAX_STIFFNESS = 2.0
-MIN_SR = 0.5
-MAX_SR = 2.0
-MIN_SR_TH = 0.55
-MAX_SR_TH = 1.9
+MIN_SR = 0.99
+MAX_SR = 1.01
+MIN_SR_TH = 0.99
+MAX_SR_TH = 1.01
 
 LEARNING_RATE = 3
 
@@ -246,7 +246,7 @@ def locationd_thread(gctx, addr, disabled_logs):
           params = learner.get_values()
           params['carFingerprint'] = CP.carFingerprint
           params_reader.put("LiveParameters", json.dumps(params))
-          params_reader.put("ControlsParams", json.dumps({'angle_model_bias': log.live100.angleModelBias}))
+          params_reader.put("ControlsParams", json.dumps({'angle_model_bias': log.live100.angleModelBias, 'angle_ff_gain': log.live100.angleFFGain}))
 
         i += 1
       elif socket is camera_odometry_socket:

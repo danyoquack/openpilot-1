@@ -1925,8 +1925,6 @@ static void camera_close(CameraState *s) {
       LOG("isp release stream: %d", err);
     }
   }
-
-  free(s->eeprom);
 }
 
 

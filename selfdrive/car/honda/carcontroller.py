@@ -12,9 +12,9 @@ def actuator_hystereses(brake, braking, brake_steady, v_ego, car_fingerprint):
   # hyst params
   brake_hyst_on = 0.02     # to activate brakes exceed this value
   brake_hyst_off = 0.005                     # to deactivate brakes below this value
-  brake_hyst_gap = 0.01                      # don't change brake command for small oscillations within this value
+  brake_hyst_gap = 0.01                      # don't change brake command for small ocilalitons within this value
 
-  #*** hysteresis logic to avoid brake blinking. go above 0.1 to trigger
+  #*** histeresis logic to avoid brake blinking. go above 0.1 to trigger
   if (brake < brake_hyst_on and not braking) or brake < brake_hyst_off:
     brake = 0.
   braking = brake > 0.
@@ -34,7 +34,7 @@ def actuator_hystereses(brake, braking, brake_steady, v_ego, car_fingerprint):
   return brake, braking, brake_steady
 
 
-def brake_pump_hysteresis(apply_brake, apply_brake_last, last_pump_ts):
+def brake_pump_hysteresys(apply_brake, apply_brake_last, last_pump_ts):
   ts = sec_since_boot()
   pump_on = False
 
@@ -84,6 +84,22 @@ class CarController(object):
     self.enable_camera = enable_camera
     self.packer = CANPacker(dbc_name)
     self.new_radar_config = False
+    self.prev_lead_distance = 0.0
+    self.stopped_lead_distance = 0.0
+    self.lead_distance_counter = 1
+    self.lead_distance_counter_prev = 1
+    self.rough_lead_speed = 0.0
+
+  def rough_speed(self, lead_distance):
+    if self.prev_lead_distance != lead_distance:
+      self.lead_distance_counter_prev = self.lead_distance_counter
+      self.rough_lead_speed += 0.3334 * ((lead_distance - self.prev_lead_distance) / self.lead_distance_counter_prev - self.rough_lead_speed)
+      self.lead_distance_counter = 0.0
+    elif self.lead_distance_counter >= self.lead_distance_counter_prev:
+      self.rough_lead_speed = (self.lead_distance_counter * self.rough_lead_speed) / (self.lead_distance_counter + 1.0)
+    self.lead_distance_counter += 1.0
+    self.prev_lead_distance = lead_distance
+    return self.rough_lead_speed
 
   def update(self, sendcan, enabled, CS, frame, actuators, \
              pcm_speed, pcm_override, pcm_cancel_cmd, pcm_accel, \
@@ -133,7 +149,7 @@ class CarController(object):
     # **** process the car messages ****
 
     # *** compute control surfaces ***
-    BRAKE_MAX = 1024//4
+    BRAKE_MAX = 1024/4
     if CS.CP.carFingerprint in (CAR.ACURA_ILX):
       STEER_MAX = 0xF00
     elif CS.CP.carFingerprint in (CAR.CRV, CAR.ACURA_RDX):
@@ -146,7 +162,10 @@ class CarController(object):
     # steer torque is converted back to CAN reference (positive when steering right)
     apply_gas = clip(actuators.gas, 0., 1.)
     apply_brake = int(clip(self.brake_last * BRAKE_MAX, 0, BRAKE_MAX - 1))
-    apply_steer = int(clip(-actuators.steer * STEER_MAX, -STEER_MAX, STEER_MAX))
+    orig_apply_steer = int(-actuators.steer * STEER_MAX)
+    apply_steer = int(clip(orig_apply_steer, -STEER_MAX, STEER_MAX))
+    CS.apply_steer = (-100 * apply_steer) / STEER_MAX
+    CS.torque_clipped = (orig_apply_steer != apply_steer)
 
     lkas_active = enabled and not CS.steer_not_allowed
 
@@ -159,8 +178,8 @@ class CarController(object):
       lkas_active, CS.CP.carFingerprint, idx))
 
     # Send dashboard UI commands.
-    if (frame % 10) == 0:
-      idx = (frame//10) % 4
+    if (frame % 10) == 0: 
+      idx = (frame/10) % 4
       can_sends.extend(hondacan.create_ui_commands(self.packer, pcm_speed, hud, CS.CP.carFingerprint, idx))
 
     if CS.CP.radarOffCan:
@@ -168,13 +187,23 @@ class CarController(object):
       if pcm_cancel_cmd:
         can_sends.append(hondacan.spam_buttons_command(self.packer, CruiseButtons.CANCEL, idx))
       elif CS.stopped:
-        can_sends.append(hondacan.spam_buttons_command(self.packer, CruiseButtons.RES_ACCEL, idx))
-
+        if CS.CP.carFingerprint in (CAR.ACCORD, CAR.ACCORD_15, CAR.ACCORDH):
+          rough_lead_speed = self.rough_speed(CS.lead_distance)
+          if CS.lead_distance > (self.stopped_lead_distance + 15.0) or rough_lead_speed > 0.1:
+            self.stopped_lead_distance = 0.0
+            can_sends.append(hondacan.spam_buttons_command(self.packer, CruiseButtons.RES_ACCEL, idx))
+            print("spamming")
+          print(self.stopped_lead_distance, CS.lead_distance, rough_lead_speed)
+        else:
+          can_sends.append(hondacan.spam_buttons_command(self.packer, CruiseButtons.RES_ACCEL, idx))
+      else:
+        self.stopped_lead_distance = CS.lead_distance
+        self.prev_lead_distance = CS.lead_distance
     else:
       # Send gas and brake commands.
       if (frame % 2) == 0:
-        idx = frame // 2
-        pump_on, self.last_pump_ts = brake_pump_hysteresis(apply_brake, self.apply_brake_last, self.last_pump_ts)
+        idx = frame / 2
+        pump_on, self.last_pump_ts = brake_pump_hysteresys(apply_brake, self.apply_brake_last, self.last_pump_ts)
         can_sends.append(hondacan.create_brake_command(self.packer, apply_brake, pump_on,
           pcm_override, pcm_cancel_cmd, hud.chime, hud.fcw, idx))
         self.apply_brake_last = apply_brake
@@ -184,4 +213,4 @@ class CarController(object):
           # This prevents unexpected pedal range rescaling
           can_sends.append(create_gas_command(self.packer, apply_gas, idx))
 
-    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan'))
+    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan').to_bytes())

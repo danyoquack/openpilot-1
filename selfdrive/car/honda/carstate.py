@@ -103,14 +103,15 @@ def get_can_signals(CP):
                 ("CRUISE_SPEED_PCM", "CRUISE", 0),
                 ("CRUISE_SPEED_OFFSET", "CRUISE_PARAMS", 0)]
     checks += [("STANDSTILL", 50)]
-
     if CP.carFingerprint == CAR.ODYSSEY_CHN:
       checks += [("CRUISE_PARAMS", 10)]
     else:
       checks += [("CRUISE_PARAMS", 50)]
-
   if CP.carFingerprint in (CAR.ACCORD, CAR.ACCORD_15, CAR.ACCORDH, CAR.CIVIC_BOSCH, CAR.CRV_HYBRID):
-    signals += [("DRIVERS_DOOR_OPEN", "SCM_FEEDBACK", 1)]
+    signals += [("DRIVERS_DOOR_OPEN", "SCM_FEEDBACK", 1),
+                ("LEAD_DISTANCE", "RADAR_HUD", 0)]
+    checks += [("RADAR_HUD", 50)]
+
   elif CP.carFingerprint == CAR.ODYSSEY_CHN:
     signals += [("DRIVERS_DOOR_OPEN", "SCM_BUTTONS", 1)]
   else:
@@ -180,19 +181,24 @@ class CarState(object):
     self.cruise_setting = 0
     self.v_cruise_pcm_prev = 0
     self.blinker_on = 0
-
+    self.prev_steering_counter = 0
+    self.steer_data_reused = 0
+    self.steer_good_count = 0
+    self.steer_data_skipped = 0
+    self.torque_clipped = False
+    self.apply_steer = 0.
     self.left_blinker_on = 0
     self.right_blinker_on = 0
 
     self.stopped = 0
 
     # vEgo kalman filter
-    dt = 0.01
+    dt = 1.0 / CP.carCANRate
     # Q = np.matrix([[10.0, 0.0], [0.0, 100.0]])
     # R = 1e3
     self.v_ego_kf = KF1D(x0=[[0.0], [0.0]],
                          A=[[1.0, dt], [0.0, 1.0]],
-                         C=[1.0, 0.0],
+                         C=[[1.0, 0.0]],
                          K=[[0.12287673], [0.29666309]])
     self.v_ego = 0.0
 
@@ -210,15 +216,16 @@ class CarState(object):
     self.prev_cruise_buttons = self.cruise_buttons
     self.prev_cruise_setting = self.cruise_setting
     self.prev_blinker_on = self.blinker_on
-
+ 
     self.prev_left_blinker_on = self.left_blinker_on
     self.prev_right_blinker_on = self.right_blinker_on
 
     # ******************* parse out can *******************
-
+    self.lead_distance = 0.0
     if self.CP.carFingerprint in (CAR.ACCORD, CAR.ACCORD_15, CAR.ACCORDH, CAR.CIVIC_BOSCH, CAR.CRV_HYBRID): # TODO: find wheels moving bit in dbc
       self.standstill = cp.vl["ENGINE_DATA"]['XMISSION_SPEED'] < 0.1
       self.door_all_closed = not cp.vl["SCM_FEEDBACK"]['DRIVERS_DOOR_OPEN']
+      self.lead_distance = cp.vl["RADAR_HUD"]['LEAD_DISTANCE']
     elif self.CP.carFingerprint == CAR.ODYSSEY_CHN:
       self.standstill = cp.vl["ENGINE_DATA"]['XMISSION_SPEED'] < 0.1
       self.door_all_closed = not cp.vl["SCM_BUTTONS"]['DRIVERS_DOOR_OPEN']
@@ -269,6 +276,16 @@ class CarState(object):
     self.gear = 0 if self.CP.carFingerprint == CAR.CIVIC else cp.vl["GEARBOX"]['GEAR']
     self.angle_steers = cp.vl["STEERING_SENSORS"]['STEER_ANGLE']
     self.angle_steers_rate = cp.vl["STEERING_SENSORS"]['STEER_ANGLE_RATE']
+    steer_counter = cp.vl["STEERING_SENSORS"]['COUNTER']
+    if not (steer_counter == (self.prev_steering_counter + 1) % 4):
+      if steer_counter == self.prev_steering_counter:
+        self.steer_data_reused += 1
+        print("data reused: %d  skipped %d  good %d   %d vs %d" % (self.steer_data_reused, self.steer_data_skipped, self.steer_good_count, steer_counter, (self.prev_steering_counter + 1) % 4))
+      else:
+        self.steer_data_skipped += 1
+    else:
+      self.steer_good_count += 1
+    self.prev_steering_counter = steer_counter
 
     self.cruise_setting = cp.vl["SCM_BUTTONS"]['CRUISE_SETTING']
     self.cruise_buttons = cp.vl["SCM_BUTTONS"]['CRUISE_BUTTONS']

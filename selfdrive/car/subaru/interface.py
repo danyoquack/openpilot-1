@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from cereal import car
+import numpy as np
 from common.realtime import sec_since_boot
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import create_event, EventTypes as ET
@@ -21,6 +22,11 @@ class CarInterface(object):
     self.can_invalid_count = 0
     self.acc_active_prev = 0
     self.gas_pressed_prev = False
+    self.angle_offset_bias = 0.0
+    self.angles_error = np.zeros((500))
+    self.avg_error1 = 0.0
+    self.avg_error2 = 0.0
+    self.steer_error = 0.0
 
     # *** init the major players ***
     self.CS = CarState(CP)
@@ -55,9 +61,13 @@ class CarInterface(object):
     ret.steerLimitAlert = True
 
     ret.enableCamera = True
+    ret.steerMPCReactTime = 0.0     # increase total MPC projected time by 25 ms
+    ret.steerMPCDampTime = 0.25       # dampen desired angle over 250ms (5 mpc cycles)
+    ret.rateFFGain = 0.4
 
     std_cargo = 136
-    ret.steerRateCost = 0.7
+    ret.steerRateCost = 0.5
+    ret.carCANRate = 100.0
 
     if candidate in [CAR.IMPREZA]:
       ret.mass = 1568 + std_cargo
@@ -65,10 +75,10 @@ class CarInterface(object):
       ret.centerToFront = ret.wheelbase * 0.5
       ret.steerRatio = 15
       tire_stiffness_factor = 1.0
-      ret.steerActuatorDelay = 0.4   # end-to-end angle controller
-      ret.lateralTuning.pid.kf = 0.00005
-      ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0., 20.], [0., 20.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.2, 0.3], [0.02, 0.03]]
+      ret.steerActuatorDelay = 0.1   # end-to-end angle controller
+      ret.steerKf = 0.00005
+      ret.steerKiBP, ret.steerKpBP = [[0., 20.], [0., 20.]]
+      ret.steerKpV, ret.steerKiV = [[0.2, 0.3], [0.02, 0.03]]
       ret.steerMaxBP = [0.] # m/s
       ret.steerMaxV = [1.]
 
@@ -81,12 +91,12 @@ class CarInterface(object):
     ret.gasMaxV = [0.]
     ret.brakeMaxBP = [0.]
     ret.brakeMaxV = [0.]
-    ret.longitudinalTuning.deadzoneBP = [0.]
-    ret.longitudinalTuning.deadzoneV = [0.]
-    ret.longitudinalTuning.kpBP = [0.]
-    ret.longitudinalTuning.kpV = [0.]
-    ret.longitudinalTuning.kiBP = [0.]
-    ret.longitudinalTuning.kiV = [0.]
+    ret.longPidDeadzoneBP = [0.]
+    ret.longPidDeadzoneV = [0.]
+    ret.longitudinalKpBP = [0.]
+    ret.longitudinalKpV = [0.]
+    ret.longitudinalKiBP = [0.]
+    ret.longitudinalKiV = [0.]
 
     # end from gm
 
@@ -159,6 +169,8 @@ class CarInterface(object):
     ret.rightBlinker = self.CS.right_blinker_on
     ret.seatbeltUnlatched = self.CS.seatbelt_unlatched
     ret.doorOpen = self.CS.door_open
+    ret.steeringTorqueClipped = self.CS.torque_clipped
+    ret.steeringRequested = self.CS.apply_steer
 
     buttonEvents = []
 

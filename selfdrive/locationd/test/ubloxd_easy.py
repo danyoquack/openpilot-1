@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 import os
-from selfdrive.locationd.test import ublox
+import ublox
 from common import realtime
-from selfdrive.locationd.test.ubloxd import gen_raw, gen_solution
+from ubloxd import gen_raw, gen_solution
 import zmq
 import selfdrive.messaging as messaging
 from selfdrive.services import service_list

@@ -7,7 +7,7 @@ from selfdrive.car.toyota.toyotacan import make_can_msg, create_video_target,\
                                            create_steer_command, create_ui_command, \
                                            create_ipas_steer_command, create_accel_command, \
                                            create_fcw_command
-from selfdrive.car.toyota.values import ECU, STATIC_MSGS, TSSP2_CAR
+from selfdrive.car.toyota.values import ECU, STATIC_MSGS
 from selfdrive.can.packer import CANPacker
 
 VisualAlert = car.CarControl.HUDControl.VisualAlert
@@ -125,8 +125,7 @@ class CarController(object):
     self.packer = CANPacker(dbc_name)
 
   def update(self, sendcan, enabled, CS, frame, actuators,
-             pcm_cancel_cmd, hud_alert, audible_alert, forwarding_camera,
-             left_line, right_line, lead, left_lane_depart, right_lane_depart):
+             pcm_cancel_cmd, hud_alert, audible_alert, forwarding_camera, left_line, right_line, lead):
 
     # *** compute control surfaces ***
 
@@ -140,14 +139,14 @@ class CarController(object):
       apply_accel = 0.06 - actuators.brake
     else:
       apply_accel = actuators.gas - actuators.brake
-
+ 
     apply_accel, self.accel_steady = accel_hysteresis(apply_accel, self.accel_steady, enabled)
     apply_accel = clip(apply_accel * ACCEL_SCALE, ACCEL_MIN, ACCEL_MAX)
 
     # steer torque
-    apply_steer = int(round(actuators.steer * SteerLimitParams.STEER_MAX))
+    orig_apply_steer = int(round(actuators.steer * SteerLimitParams.STEER_MAX))
 
-    apply_steer = apply_toyota_steer_torque_limits(apply_steer, self.last_steer, CS.steer_torque_motor, SteerLimitParams)
+    apply_steer = apply_toyota_steer_torque_limits(orig_apply_steer, self.last_steer, CS.steer_torque_motor, SteerLimitParams)
 
     # only cut torque when steer state is a known fault
     if CS.steer_state in [9, 25]:
@@ -159,6 +158,9 @@ class CarController(object):
       apply_steer_req = 0
     else:
       apply_steer_req = 1
+
+    CS.torque_clipped = (orig_apply_steer != apply_steer)
+    CS.apply_steer = (100 * apply_steer) / SteerLimitParams.STEER_MAX
 
     self.steer_angle_enabled, self.ipas_reset_counter = \
       ipas_state_transition(self.steer_angle_enabled, enabled, CS.ipas_active, self.ipas_reset_counter)
@@ -227,11 +229,11 @@ class CarController(object):
     if (frame % 2 == 0) and (CS.CP.enableGasInterceptor):
         # send exactly zero if apply_gas is zero. Interceptor will send the max between read value and apply_gas.
         # This prevents unexpected pedal range rescaling
-        can_sends.append(create_gas_command(self.packer, apply_gas, frame//2))
+        can_sends.append(create_gas_command(self.packer, apply_gas, frame/2))
 
     if frame % 10 == 0 and ECU.CAM in self.fake_ecus and not forwarding_camera:
       for addr in TARGET_IDS:
-        can_sends.append(create_video_target(frame//10, addr))
+        can_sends.append(create_video_target(frame/10, addr))
 
     # ui mesg is at 100Hz but we send asap if:
     # - there is something to display
@@ -246,10 +248,10 @@ class CarController(object):
     else:
       send_ui = False
 
-    if (frame % 100 == 0 or send_ui) and ECU.CAM in self.fake_ecus:
-      can_sends.append(create_ui_command(self.packer, steer, sound1, sound2, left_line, right_line, left_lane_depart, right_lane_depart))
+    if (frame % int(CS.CP.carCANRate) == 0 or send_ui) and ECU.CAM in self.fake_ecus:
+      can_sends.append(create_ui_command(self.packer, steer, sound1, sound2, left_line, right_line))
 
-    if frame % 100 == 0 and ECU.DSU in self.fake_ecus and self.car_fingerprint not in TSSP2_CAR:
+    if frame % int(CS.CP.carCANRate) == 0 and ECU.DSU in self.fake_ecus:
       can_sends.append(create_fcw_command(self.packer, fcw))
 
     #*** static msgs ***
@@ -258,11 +260,11 @@ class CarController(object):
       if frame % fr_step == 0 and ecu in self.fake_ecus and self.car_fingerprint in cars and not (ecu == ECU.CAM and forwarding_camera):
         # special cases
         if fr_step == 5 and ecu == ECU.CAM and bus == 1:
-          cnt = (((frame // 5) % 7) + 1) << 5
+          cnt = (((frame / 5) % 7) + 1) << 5
           vl = chr(cnt) + vl
         elif addr in (0x489, 0x48a) and bus == 0:
           # add counter for those 2 messages (last 4 bits)
-          cnt = ((frame // 100) % 0xf) + 1
+          cnt = ((frame/100)%0xf) + 1
           if addr == 0x48a:
             # 0x48a has a 8 preceding the counter
             cnt += 1 << 7
@@ -271,4 +273,4 @@ class CarController(object):
         can_sends.append(make_can_msg(addr, vl, bus, False))
 
 
-    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan'))
+    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan').to_bytes())

@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from common.realtime import sec_since_boot
 from cereal import car
+import numpy as np
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
 from selfdrive.controls.lib.vehicle_model import VehicleModel
@@ -29,6 +30,11 @@ class CarInterface(object):
     self.CS = CarState(CP)
     self.cp = get_can_parser(CP)
     self.cp_cam = get_camera_parser(CP)
+    self.angle_offset_bias = 0.0
+    self.angles_error = np.zeros((500))
+    self.avg_error1 = 0.0
+    self.avg_error2 = 0.0
+    self.steer_error = 0.0
 
     # sending if read only is False
     if sendcan is not None:
@@ -70,22 +76,27 @@ class CarInterface(object):
     tireStiffnessRear_civic = 90000 * 2.0
 
     # Speed conversion:              20, 45 mph
+    ret.steerKpBP, ret.steerKiBP = [[9., 20.], [9., 20.]]
     ret.wheelbase = 3.089  # in meters for Pacifica Hybrid 2017
     ret.steerRatio = 16.2 # Pacifica Hybrid 2017
     ret.mass = 2858 + std_cargo  # kg curb weight Pacifica Hybrid 2017
-    ret.lateralTuning.pid.kpBP, ret.lateralTuning.pid.kiBP = [[9., 20.], [9., 20.]]
-    ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.15,0.30], [0.03,0.05]]
-    ret.lateralTuning.pid.kf = 0.00006   # full torque for 10 deg at 80mph means 0.00007818594
+    ret.steerKpV, ret.steerKiV =   [[0.15,0.30], [0.03,0.05]]
+    ret.steerKf = 0.00006   # full torque for 10 deg at 80mph means 0.00007818594
     ret.steerActuatorDelay = 0.1
-    ret.steerRateCost = 0.7
+    ret.steerRateCost = 0.5
+    ret.steerMPCReactTime = 0.0     # increase total MPC projected time by 25 ms
+    ret.steerMPCDampTime = 0.25       # dampen desired angle over 250ms (5 mpc cycles)
+    ret.rateFFGain = 0.4
 
     if candidate in (CAR.JEEP_CHEROKEE, CAR.JEEP_CHEROKEE_2019):
       ret.wheelbase = 2.91  # in meters
       ret.steerRatio = 12.7
-      ret.steerActuatorDelay = 0.2  # in seconds
+      ret.steerActuatorDelay = 0.1  # in seconds
 
     ret.centerToFront = ret.wheelbase * 0.44
 
+    ret.longPidDeadzoneBP = [0., 9.]
+    ret.longPidDeadzoneV = [0., .15]
 
     ret.minSteerSpeed = 3.8  # m/s
     ret.minEnableSpeed = -1.   # enable is done by stock ACC, so ignore this
@@ -118,6 +129,7 @@ class CarInterface(object):
     ret.gasMaxV = [0.5]
     ret.brakeMaxBP = [5., 20.]
     ret.brakeMaxV = [1., 0.8]
+    ret.carCANRate = 100.0
 
     ret.enableCamera = not check_ecu_msgs(fingerprint, ECU.CAM)
     print("ECU Camera Simulated: {0}".format(ret.enableCamera))
@@ -127,12 +139,10 @@ class CarInterface(object):
     ret.stoppingControl = False
     ret.startAccel = 0.0
 
-    ret.longitudinalTuning.deadzoneBP = [0., 9.]
-    ret.longitudinalTuning.deadzoneV = [0., .15]
-    ret.longitudinalTuning.kpBP = [0., 5., 35.]
-    ret.longitudinalTuning.kpV = [3.6, 2.4, 1.5]
-    ret.longitudinalTuning.kiBP = [0., 35.]
-    ret.longitudinalTuning.kiV = [0.54, 0.36]
+    ret.longitudinalKpBP = [0., 5., 35.]
+    ret.longitudinalKpV = [3.6, 2.4, 1.5]
+    ret.longitudinalKiBP = [0., 35.]
+    ret.longitudinalKiV = [0.54, 0.36]
 
     return ret
 
@@ -140,7 +150,8 @@ class CarInterface(object):
   def update(self, c):
     # ******************* do can recv *******************
     canMonoTimes = []
-    self.cp.update(int(sec_since_boot() * 1e9), False)
+
+    self.cp.update(int(sec_since_boot() * 1e9), True)
     self.cp_cam.update(int(sec_since_boot() * 1e9), False)
     self.CS.update(self.cp, self.cp_cam)
 
@@ -173,6 +184,8 @@ class CarInterface(object):
     # steering wheel
     ret.steeringAngle = self.CS.angle_steers
     ret.steeringRate = self.CS.angle_steers_rate
+    ret.steeringTorqueClipped = self.CS.torque_clipped
+    ret.steeringRequested = self.CS.apply_steer
 
     ret.steeringTorque = self.CS.steer_torque_driver
     ret.steeringPressed = self.CS.steer_override

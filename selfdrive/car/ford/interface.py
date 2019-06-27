@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from common.realtime import sec_since_boot
 from cereal import car
+import numpy as np
 from selfdrive.swaglog import cloudlog
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
@@ -24,6 +25,11 @@ class CarInterface(object):
     self.gas_pressed_prev = False
     self.brake_pressed_prev = False
     self.cruise_enabled_prev = False
+    self.angle_offset_bias = 0.0
+    self.angles_error = np.zeros((500))
+    self.avg_error1 = 0.0
+    self.avg_error2 = 0.0
+    self.steer_error = 0.0
 
     # *** init the major players ***
     self.CS = CarState(CP)
@@ -69,14 +75,18 @@ class CarInterface(object):
     tireStiffnessFront_civic = 85400
     tireStiffnessRear_civic = 90000
 
+    ret.steerKiBP, ret.steerKpBP = [[0.], [0.]]
     ret.wheelbase = 2.85
     ret.steerRatio = 14.8
     ret.mass = 3045. * CV.LB_TO_KG + std_cargo
-    ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0.], [0.]]
-    ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.01], [0.005]]     # TODO: tune this
-    ret.lateralTuning.pid.kf = 1. / MAX_ANGLE   # MAX Steer angle to normalize FF
+    ret.steerKpV, ret.steerKiV = [[0.01], [0.005]]     # TODO: tune this
+    ret.steerKf = 1. / MAX_ANGLE   # MAX Steer angle to normalize FF
     ret.steerActuatorDelay = 0.1  # Default delay, not measured yet
     ret.steerRateCost = 1.0
+    ret.steerMPCReactTime = 0.025     # increase total MPC projected time by 25 ms
+    ret.steerMPCDampTime = 0.15       # dampen desired angle over 250ms (5 mpc cycles)
+    ret.rateFFGain = 0.01
+    ret.carCANRate = 100.0
 
     f = 1.2
     tireStiffnessFront_civic *= f
@@ -84,6 +94,8 @@ class CarInterface(object):
 
     ret.centerToFront = ret.wheelbase * 0.44
 
+    ret.longPidDeadzoneBP = [0., 9.]
+    ret.longPidDeadzoneV = [0., .15]
 
     # min speed to enable ACC. if car can do stop and go, then set enabling speed
     # to a negative value, so it won't matter.
@@ -124,12 +136,10 @@ class CarInterface(object):
     ret.stoppingControl = False
     ret.startAccel = 0.0
 
-    ret.longitudinalTuning.deadzoneBP = [0., 9.]
-    ret.longitudinalTuning.deadzoneV = [0., .15]
-    ret.longitudinalTuning.kpBP = [0., 5., 35.]
-    ret.longitudinalTuning.kpV = [3.6, 2.4, 1.5]
-    ret.longitudinalTuning.kiBP = [0., 35.]
-    ret.longitudinalTuning.kiV = [0.54, 0.36]
+    ret.longitudinalKpBP = [0., 5., 35.]
+    ret.longitudinalKpV = [3.6, 2.4, 1.5]
+    ret.longitudinalKiBP = [0., 35.]
+    ret.longitudinalKiV = [0.54, 0.36]
 
     return ret
 
@@ -138,7 +148,7 @@ class CarInterface(object):
     # ******************* do can recv *******************
     canMonoTimes = []
 
-    self.cp.update(int(sec_since_boot() * 1e9), False)
+    self.cp.update(int(sec_since_boot() * 1e9), True)
 
     self.CS.update(self.cp)
 
@@ -157,6 +167,8 @@ class CarInterface(object):
     # steering wheel
     ret.steeringAngle = self.CS.angle_steers
     ret.steeringPressed = self.CS.steer_override
+    ret.steeringTorqueClipped = False  # self.CS.torque_clipped
+    ret.steeringRequested = 0   #self.CS.apply_steer
 
     # gas pedal
     ret.gas = self.CS.user_gas / 100.

@@ -388,15 +388,37 @@ struct Live100Data {
   ufAccelCmd @33 :Float32;
   yActualDEPRECATED @6 :Float32;
   yDesDEPRECATED @7 :Float32;
-  upSteerDEPRECATED @8 :Float32;
-  uiSteerDEPRECATED @9 :Float32;
-  ufSteerDEPRECATED @34 :Float32;
+  upSteer @8 :Float32;
+  uiSteer @9 :Float32;
+  ufSteer @34 :Float32;
+  angleFFRatio @52 :Float32;
+  standardFFRatio @60 :Float32;
+  rateFFGain @53 :Float32;
+  angleFFGain @54 :Float32;
+  upSteer2 @70 :Float32;
   aTargetMinDEPRECATED @10 :Float32;
   aTargetMaxDEPRECATED @11 :Float32;
   aTarget @35 :Float32;
   jerkFactor @12 :Float32;
   angleSteers @13 :Float32;     # Steering angle in degrees.
+  angleRate @61 :Float32;
+  delaySteer @64 :Float32;
+  longOffset @67 :Float32;
   angleSteersDes @29 :Float32;
+  dampAngleSteersDes @55 :Float32;
+  dampRateSteersDes @56 :Float32;
+  angleSteersNoise @57 :Float32;
+  angleSteersDesNoise @58 :Float32;
+  noiseFeedback @59 :Float32;
+  dampAngleSteers @62 :Float32;
+  dampAngleRate @68 :Float32;
+  angleAccel @69 :Float32;
+  dampCenterOffset @71 :Float32;
+  deadzone @72 :Float32;
+  steeringRequested @63 :Float32;
+  oscillationPeriod @65 :Float32;
+  oscillationFactor @66 :Float32;
+
   curvature @37 :Float32;       # path curvature from vehicle model
   hudLeadDEPRECATED @14 :Int32;
   cumLagMs @15 :Float32;
@@ -428,11 +450,6 @@ struct Live100Data {
   vCurvature @46 :Float32;
   decelForTurn @47 :Bool;
 
-  lateralControlState :union {
-    indiState @52 :LateralINDIState;
-    pidState @53 :LateralPIDState;
-  }
-
   enum ControlState {
     disabled @0;
     preEnabled @1;
@@ -459,31 +476,6 @@ struct Live100Data {
     mid @2;     # mid screen
     full @3;    # full screen
   }
-
-  struct LateralINDIState {
-    active @0 :Bool;
-    steerAngle @1 :Float32;
-    steerRate @2 :Float32;
-    steerAccel @3 :Float32;
-    rateSetPoint @4 :Float32;
-    accelSetPoint @5 :Float32;
-    accelError @6 :Float32;
-    delayedOutput @7 :Float32;
-    delta @8 :Float32;
-    output @9 :Float32;
-  }
-
-  struct LateralPIDState {
-    active @0 :Bool;
-    steerAngle @1 :Float32;
-    steerRate @2 :Float32;
-    angleError @3 :Float32;
-    p @4 :Float32;
-    i @5 :Float32;
-    f @6 :Float32;
-    output @7 :Float32;
-    saturated @8 :Bool;
-   }
 
 }
 
@@ -575,7 +567,7 @@ struct LogRotate {
 struct Plan {
   mdMonoTime @9 :UInt64;
   l20MonoTime @10 :UInt64;
-  eventsDEPRECATED @13 :List(Car.CarEvent);
+  events @13 :List(Car.CarEvent);
 
   # lateral, 3rd order polynomial
   lateralValidDEPRECATED @0 :Bool;
@@ -613,7 +605,6 @@ struct Plan {
   decelForTurn @22 :Bool;
   mapValid @25 :Bool;
   radarValid @28 :Bool;
-  radarCommIssue @30 :Bool;
 
   processingDelay @29 :Float32;
 
@@ -644,6 +635,10 @@ struct PathPlan {
 
   angleSteers @8 :Float32; # deg
   rateSteers @13 :Float32; # deg/s
+  mpcAngles @14 :List(Float32);
+  mpcRates @15 :List(Float32);
+  mpcTimes @16 :List(Float32);
+  laneProb @17 :Float32;
   valid @9 :Bool;
   paramsValid @10 :Bool;
   modelValid @12 :Bool;

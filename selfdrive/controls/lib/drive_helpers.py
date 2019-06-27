@@ -1,8 +1,6 @@
 from cereal import car
-from common.numpy_fast import clip, interp
+from common.numpy_fast import clip
 from selfdrive.config import Conversions as CV
-
-DT = 0.01  # Controlsd runs at 100Hz
 
 # kph
 V_CRUISE_MAX = 144
@@ -55,10 +53,6 @@ def get_events(events, types):
 
 def rate_limit(new_value, last_value, dw_step, up_step):
   return clip(new_value, last_value + dw_step, last_value + up_step)
-
-
-def get_steer_max(CP, v_ego):
-  return interp(v_ego, CP.steerMaxBP, CP.steerMaxV)
 
 
 def learn_angle_model_bias(lateral_control, v_ego, angle_model_bias, c_poly, c_prob, angle_steers, steer_override):

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import zmq
+import numpy as np
 from cereal import car
 from selfdrive.config import Conversions as CV
 from selfdrive.services import service_list
@@ -29,6 +30,11 @@ class CarInterface(object):
     self.prev_speed = 0.
     self.yaw_rate = 0.
     self.yaw_rate_meas = 0.
+    self.angle_offset_bias = 0.0
+    self.angles_error = np.zeros((500))
+    self.avg_error1 = 0.0
+    self.avg_error2 = 0.0
+    self.steer_error = 0.0
 
   @staticmethod
   def compute_gb(accel, speed):
@@ -56,9 +62,15 @@ class CarInterface(object):
     ret.wheelbase = 2.70
     ret.centerToFront = ret.wheelbase * 0.5
     ret.steerRatio = 13. # reasonable
+    ret.longPidDeadzoneBP = [0.]
+    ret.longPidDeadzoneV = [0.]
     ret.tireStiffnessFront = 1e6    # very stiff to neglect slip
     ret.tireStiffnessRear = 1e6     # very stiff to neglect slip
     ret.steerRatioRear = 0.
+    ret.steerMPCReactTime = 0.025     # increase total MPC projected time by 25 ms
+    ret.steerMPCDampTime = 0.15       # dampen desired angle over 250ms (5 mpc cycles)
+    ret.rateFFGain = 0.01
+    ret.carCANRate = 100.0
 
     ret.steerMaxBP = [0.]
     ret.steerMaxV = [0.]  # 2/3rd torque allowed above 45 kph
@@ -67,12 +79,10 @@ class CarInterface(object):
     ret.brakeMaxBP = [0.]
     ret.brakeMaxV = [0.]
 
-    ret.longitudinalTuning.kpBP = [0.]
-    ret.longitudinalTuning.kpV = [0.]
-    ret.longitudinalTuning.kiBP = [0.]
-    ret.longitudinalTuning.kiV = [0.]
-    ret.longitudinalTuning.deadzoneBP = [0.]
-    ret.longitudinalTuning.deadzoneV = [0.]
+    ret.longitudinalKpBP = [0.]
+    ret.longitudinalKpV = [0.]
+    ret.longitudinalKiBP = [0.]
+    ret.longitudinalKiV = [0.]
     ret.steerActuatorDelay = 0.
 
     return ret
@@ -102,6 +112,8 @@ class CarInterface(object):
 
     ret.aEgo = a
     ret.brakePressed = a < -0.5
+    ret.steeringTorqueClipped = False
+    ret.steeringRequested = 0
 
     self.yawRate = LPG * self.yaw_rate_meas + (1. - LPG) * self.yaw_rate
     ret.yawRate = self.yaw_rate

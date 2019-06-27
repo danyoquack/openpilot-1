@@ -275,6 +275,7 @@ def mapsd_thread():
 
 
 def main(gctx=None):
+  print("started")
   params = Params()
   dongle_id = params.get("DongleId")
   crash.bind_user(id=dongle_id)

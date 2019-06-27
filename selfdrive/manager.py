@@ -42,7 +42,7 @@ def unblock_stdout():
 
 if __name__ == "__main__":
   neos_update_required = os.path.isfile("/init.qcom.rc") \
-    and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 9)
+    and (not os.path.isfile("/VERSION") or int(open("/VERSION").read()) < 8)
   if neos_update_required:
     # update continue.sh before updating NEOS
     if os.path.isfile(os.path.join(BASEDIR, "scripts", "continue.sh")):
@@ -88,7 +88,6 @@ from selfdrive.loggerd.config import ROOT
 managed_processes = {
   "thermald": "selfdrive.thermald",
   "uploader": "selfdrive.loggerd.uploader",
-  "deleter": "selfdrive.loggerd.deleter",
   "controlsd": "selfdrive.controls.controlsd",
   "plannerd": "selfdrive.controls.plannerd",
   "radard": "selfdrive.controls.radard",
@@ -128,7 +127,6 @@ persistent_processes = [
   'logcatd',
   'tombstoned',
   'uploader',
-  'deleter',
   'ui',
   'gpsd',
   'updated',
@@ -393,7 +391,7 @@ def update_apks():
 
   cloudlog.info("installed apks %s" % (str(installed), ))
 
-  for app in installed.keys():
+  for app in installed.iterkeys():
 
     apk_path = os.path.join(BASEDIR, "apk/"+app+".apk")
     if not os.path.exists(apk_path):

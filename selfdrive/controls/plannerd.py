@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 import zmq
-from collections import defaultdict
 
 from cereal import car
 from common.params import Params
-from common.realtime import sec_since_boot
 from selfdrive.swaglog import cloudlog
 from selfdrive.services import service_list
 from selfdrive.controls.lib.planner import Planner
@@ -54,27 +52,22 @@ def plannerd_thread():
   live_parameters.liveParameters.steerRatio = CP.steerRatio
   live_parameters.liveParameters.stiffnessFactor = 1.0
 
-  rcv_times = defaultdict(int)
-
   while True:
     for socket, event in poller.poll():
-      msg = messaging.recv_one(socket)
-      rcv_times[msg.which()] = sec_since_boot()
-
       if socket is live100_sock:
-        live100 = msg
+        live100 = messaging.recv_one(socket)
       elif socket is car_state_sock:
-        car_state = msg
+        car_state = messaging.recv_one(socket)
       elif socket is live_parameters_sock:
-        live_parameters = msg
+        live_parameters = messaging.recv_one(socket)
       elif socket is model_sock:
-        model = msg
-        PP.update(rcv_times, CP, VM, car_state, model, live100, live_parameters)
+        model = messaging.recv_one(socket)
+        PP.update(CP, VM, car_state, model, live100, live_parameters, live_map_data)
       elif socket is live_map_data_sock:
-        live_map_data = msg
+        live_map_data = messaging.recv_one(socket)
       elif socket is live20_sock:
-        live20 = msg
-        PL.update(rcv_times, car_state, CP, VM, PP, live20, live100, model, live_map_data)
+        live20 = messaging.recv_one(socket)
+        PL.update(car_state, CP, VM, PP, live20, live100, model, live_map_data)
 
 
 def main(gctx=None):

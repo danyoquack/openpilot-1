@@ -56,17 +56,12 @@ def get_can_parser(CP):
     ("STEER_ANGLE_SENSOR", 80),
     ("PCM_CRUISE", 33),
     ("PCM_CRUISE_2", 33),
-    ("STEER_TORQUE_SENSOR", 50),
+    ("STEER_TORQUE_SENSOR", 40),
     ("EPS_STATUS", 25),
   ]
 
   if CP.carFingerprint == CAR.PRIUS:
     signals += [("STATE", "AUTOPARK_STATUS", 0)]
-  
-  # add gas interceptor reading if we are using it
-  if CP.enableGasInterceptor:
-      signals.append(("INTERCEPTOR_GAS", "GAS_SENSOR", 0))
-      checks.append(("GAS_SENSOR", 50))
 
   # add gas interceptor reading if we are using it
   if CP.enableGasInterceptor:
@@ -94,18 +89,20 @@ class CarState(object):
     self.shifter_values = self.can_define.dv["GEAR_PACKET"]['GEAR']
     self.left_blinker_on = 0
     self.right_blinker_on = 0
+    self.torque_clipped = False
+    self.apply_steer = 0
 
     # initialize can parser
     self.car_fingerprint = CP.carFingerprint
 
     # vEgo kalman filter
-    dt = 0.01
+    dt = 1.0 / CP.carCANRate
     # Q = np.matrix([[10.0, 0.0], [0.0, 100.0]])
     # R = 1e3
-    self.v_ego_kf = KF1D(x0=[[0.0], [0.0]],
-                         A=[[1.0, dt], [0.0, 1.0]],
-                         C=[1.0, 0.0],
-                         K=[[0.12287673], [0.29666309]])
+    self.v_ego_kf = KF1D(x0=np.matrix([[0.0], [0.0]]),
+                         A=np.matrix([[1.0, dt], [0.0, 1.0]]),
+                         C=np.matrix([1.0, 0.0]),
+                         K=np.matrix([[0.12287673], [0.29666309]]))
     self.v_ego = 0.0
 
   def update(self, cp, cp_cam):
@@ -134,17 +131,17 @@ class CarState(object):
     self.v_wheel_fr = cp.vl["WHEEL_SPEEDS"]['WHEEL_SPEED_FR'] * CV.KPH_TO_MS
     self.v_wheel_rl = cp.vl["WHEEL_SPEEDS"]['WHEEL_SPEED_RL'] * CV.KPH_TO_MS
     self.v_wheel_rr = cp.vl["WHEEL_SPEEDS"]['WHEEL_SPEED_RR'] * CV.KPH_TO_MS
-    v_wheel = float(np.mean([self.v_wheel_fl, self.v_wheel_fr, self.v_wheel_rl, self.v_wheel_rr]))
+    self.v_wheel = float(np.mean([self.v_wheel_fl, self.v_wheel_fr, self.v_wheel_rl, self.v_wheel_rr]))
 
     # Kalman filter
-    if abs(v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
-      self.v_ego_kf.x = [[v_wheel], [0.0]]
+    if abs(self.v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
+      self.v_ego_x = np.matrix([[self.v_wheel], [0.0]])
 
-    self.v_ego_raw = v_wheel
-    v_ego_x = self.v_ego_kf.update(v_wheel)
+    self.v_ego_raw = self.v_wheel
+    v_ego_x = self.v_ego_kf.update(self.v_wheel)
     self.v_ego = float(v_ego_x[0])
     self.a_ego = float(v_ego_x[1])
-    self.standstill = not v_wheel > 0.001
+    self.standstill = not self.v_wheel > 0.001
 
     self.angle_steers = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
     self.angle_steers_rate = cp.vl["STEER_ANGLE_SENSOR"]['STEER_RATE']

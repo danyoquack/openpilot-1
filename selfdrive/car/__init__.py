@@ -1,5 +1,5 @@
 # functions common among cars
-from common.numpy_fast import clip
+from common.numpy_fast import clip, interp
 
 
 def dbc_dict(pt_dbc, radar_dbc, chassis_dbc=None):
