@@ -53,6 +53,7 @@ class PathPlanner():
     self.path_offset_i = 0.0
     self.lane_change_state = LaneChangeState.off
     self.lane_change_timer = 0.0
+    self.pre_lane_change_timer = 0.0
     self.prev_one_blinker = False
 
   def setup_mpc(self):
@@ -91,11 +92,16 @@ class PathPlanner():
 
     if not active or self.lane_change_timer > 10.0:
       self.lane_change_state = LaneChangeState.off
+      self.pre_lane_change_timer = 0.0
     else:
       if sm['carState'].leftBlinker:
         lane_change_direction = LaneChangeDirection.left
+        self.pre_lane_change_timer += DT_MDL
       elif sm['carState'].rightBlinker:
         lane_change_direction = LaneChangeDirection.right
+        self.pre_lane_change_timer += DT_MDL
+      else:
+        self.pre_lane_change_timer = 0.0
 
       if lane_change_direction == LaneChangeDirection.left:
         torque_applied = sm['carState'].steeringTorque > 0 and sm['carState'].steeringPressed
@@ -106,7 +112,11 @@ class PathPlanner():
 
       # State transitions
       # off
-      if False: # self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker:
+      if self.pre_lane_change_timer > 2.0:
+        torque_applied = True
+
+      #if False: # self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker:
+      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker:
         self.lane_change_state = LaneChangeState.preLaneChange
 
       # pre
@@ -124,7 +134,7 @@ class PathPlanner():
         self.lane_change_state = LaneChangeState.preLaneChange
 
       # Don't allow starting lane change below 45 mph
-      if (v_ego < 45 * CV.MPH_TO_MS) and (self.lane_change_state == LaneChangeState.preLaneChange):
+      if (v_ego < 35 * CV.MPH_TO_MS) and (self.lane_change_state == LaneChangeState.preLaneChange):
         self.lane_change_state = LaneChangeState.off
 
     if self.lane_change_state in [LaneChangeState.off, LaneChangeState.preLaneChange]:
